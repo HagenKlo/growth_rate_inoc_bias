@@ -1,0 +1,746 @@
+---
+title: "Final Project"
+format: html
+editor: visual
+---
+
+## Set Global Seed
+
+```{r setup, include=FALSE}
+set.seed(1969)
+```
+
+## Data Generation
+
+First test set at inoc size 10 and sd 0.2
+
+Growth parameter values generally assumed
+
+```{r}
+nutrient_levels <- c(0.25,0.5,1,1.5,2.5,5,7.5,10,20,100,200,500)
+
+# Parameters for growth model
+mumax <-1
+Qmin <-1
+inoc<-1
+sd_variation <- 0.02
+
+growth_data <- data.frame()
+
+for (R in nutrient_levels) {
+  # Calculate mean growth rate for this nutrient level
+  mean_growth <- mumax * R / (inoc*Qmin+ R)
+  
+  # Generate 6 replicate growth rates
+  replicates <- rnorm(6, mean = mean_growth, sd = sd_variation)
+  # replicates <- pmax(replicates, 0.0001)  # ensure non-negative
+  
+  growth_data <- rbind(growth_data, data.frame(
+    nutrient = R,
+    growth_rate = replicates,
+    replicate = 1:6
+  ))
+}
+
+print(growth_data)
+
+ggplot(growth_data, aes(x = nutrient, y = growth_rate)) +
+  geom_point() +
+  labs(x = "Nutrient Level", y = "Growth Rate") +
+  theme_classic()
+
+```
+
+It works!
+
+↓ Celebratory Claps ↓
+
+```{r}
+#install.packages("tuneR")
+library(tuneR)
+my_audio <- readMP3("applause-sound-427084.mp3")
+tuneR::setWavPlayer('/usr/bin/aplay')
+play(my_audio)
+```
+
+## Fitting Monod Curve to Data
+
+first test model
+
+```{r}
+# Intercept only for both paramters as we only want one estimation per value for each dataset defined by the inoculum size and sd
+monod_formula <- bf(
+  growth_rate ~ mumax * nutrient / (K + nutrient),
+  mumax ~ 1,
+  K ~ 1,     
+  nl = TRUE    # non-linear model
+)
+
+# Set Priors
+priors <- c(
+  prior(normal(1, 0.5), nlpar = "mumax", lb = 0), 
+  prior(normal(0.0101, 1000), nlpar = "K", lb = 0)       
+)
+
+# Fit Bayesian Model
+Test_Model<-brm(formula=monod_formula,
+                data = growth_data,
+                prior = priors,
+                family =gaussian(),
+                chains = 4,
+                iter = 4500,
+                warmup = 2000,
+                cores = 6,
+                control = list(adapt_delta = 0.95)
+)
+
+# View results
+summary(Test_Model)
+
+# Extract parameter estimates
+posterior_samples <- as_draws_df(Test_Model)
+mumax_median <- median(posterior_samples$b_mumax_Intercept)
+K_median <- median(posterior_samples$b_K_Intercept)
+mumax_mean <- mean(posterior_samples$b_mumax_Intercept)
+K_mean <- mean(posterior_samples$b_K_Intercept)
+
+# Plot posterior distributions
+plot(Test_Model, variable = c("b_mumax_Intercept", "b_K_Intercept"))
+
+# Create prediction plot with credible intervals
+new_nutrient <- data.frame(nutrient = seq(0, 500, length.out = 500))
+predictions <- predict((Test_Model), newdata = new_nutrient)
+
+pred_data <- cbind(new_nutrient, predictions)
+
+ggplot() +
+  geom_point(data = growth_data, aes(x = nutrient, y = growth_rate), 
+             size = 2, alpha = 0.6) +
+  geom_line(data = pred_data, aes(x = nutrient, y = Estimate), 
+            color = "blue", size = 1) +
+  geom_ribbon(data = pred_data, 
+              aes(x = nutrient, ymin = Q2.5, ymax = Q97.5), 
+              alpha = 0.2, fill = "blue") +
+  labs(title = "Bayesian Monod Curve Fit",
+       x = "Nutrient Concentration",
+       y = "Growth Rate",
+       subtitle = "Blue line = median prediction, shaded area = 95% credible interval") +
+  theme_classic()
+
+# Check model fit
+pp_check(Test_Model, ndraws = 100)
+
+# Compare prior vs posterior (optional)
+prior_summary(Test_Model)
+
+print(Test_Model)
+
+mcmc_pairs(Test_Model, pars = c("b_mumax_Intercept", "b_K_Intercept", "sigma"), off_diag_args = list(size = 1.5))
+plot(Test_Model)
+posterior_interval(Test_Model)
+```
+
+It works!
+
+## Analytic Solution
+
+```{r}
+find_growth_rate <- function(mumax,Vmax,R,H,Qmin) {
+  
+  growth_rate <- (R*Vmax*mumax)/(H*Qmin*mumax+(R*(Vmax+(Qmin*mumax))))
+  
+  return(growth_rate)
+}
+
+find_k <- function(mumax,Vmax,R,H,Qmin) {
+  
+  k<-((mumax*Qmin*H)/(Vmax-(mumax*Qmin)))
+  
+  return(k)
+}
+
+
+find_growth_rate(mumax=1,Vmax=100,R=0.0101,H=1,Qmin=1)
+find_k(mumax=1,Vmax=100,R=1,H=1,Qmin=1)
+
+# Param values of our theoretical microbe
+mumax=1
+Vmax=100
+H=1
+Qmin=1
+
+analytic_function <- function(R) {
+  (R*Vmax*mumax)/(H*Qmin*mumax+(R*(Vmax+(Qmin*mumax))))
+}
+
+ggplot()+
+  geom_point() +
+  labs(x="Nutrient Level",y="Growth Rate")+
+  stat_function(fun = analytic_function)+
+  theme_classic()
+```
+
+This is what we will compare model fits to
+
+## check model fit between stochastic families
+
+```{r}
+nutrient_levels <- c(0.25,0.5,1,1.5,2.5,5,7.5,10,20,100,200,500)
+
+# Parameters for growth model
+mumax <-1
+Qmin <-1
+inoc<-1
+sd_variation <- 0.02
+
+growth_data <- data.frame()
+
+for (R in nutrient_levels) {
+  # Calculate mean growth rate for this nutrient level
+  mean_growth <- mumax * R / (inoc*Qmin+ R)
+  
+  # Generate 6 replicate growth rates
+  replicates <- rnorm(6, mean = mean_growth, sd = sd_variation)
+  replicates <- pmax(replicates, 0.0001)  # ensure non-negative
+  
+  growth_data <- rbind(growth_data, data.frame(
+    nutrient = R,
+    growth_rate = replicates,
+    replicate = 1:6
+  ))
+}
+
+print(growth_data)
+
+ggplot(growth_data, aes(x = nutrient, y = growth_rate)) +
+  geom_point() +
+  labs(x = "Nutrient Level", y = "Growth Rate") +
+  theme_classic()
+
+monod_formula <- bf(
+  growth_rate ~ mumax * nutrient / (K + nutrient),
+  mumax ~ 1,
+  K ~ 1,     
+  nl = TRUE    # non-linear model
+)
+
+# Set Priors
+priors <- c(
+  prior(normal(1, 0.5), nlpar = "mumax", lb = 0), 
+  prior(normal(0.0101, 3000), nlpar = "K", lb = 0)       
+)
+
+# Fit Bayesian Model
+Test_Model<-brm(formula=monod_formula,
+                data = growth_data,
+                prior = priors,
+                family =gaussian(),
+                chains = 4,
+                iter = 4500,
+                warmup = 2000,
+                cores = 6,
+                control = list(adapt_delta = 0.95)
+)
+
+# View results
+summary(Test_Model)
+
+# Extract parameter estimates
+posterior_samples <- as_draws_df(Test_Model)
+mumax_median <- median(posterior_samples$b_mumax_Intercept)
+K_median <- median(posterior_samples$b_K_Intercept)
+mumax_mean <- mean(posterior_samples$b_mumax_Intercept)
+K_mean <- mean(posterior_samples$b_K_Intercept)
+
+# Plot posterior distributions
+plot(Test_Model, variable = c("b_mumax_Intercept", "b_K_Intercept"))
+
+# Create prediction plot with credible intervals
+new_nutrient <- data.frame(nutrient = seq(0, 500, length.out = 500))
+predictions <- predict((Test_Model), newdata = new_nutrient)
+
+pred_data <- cbind(new_nutrient, predictions)
+
+ggplot() +
+  geom_point(data = growth_data, aes(x = nutrient, y = growth_rate), 
+             size = 2, alpha = 0.6) +
+  geom_line(data = pred_data, aes(x = nutrient, y = Estimate), 
+            color = "blue", size = 1) +
+  geom_ribbon(data = pred_data, 
+              aes(x = nutrient, ymin = Q2.5, ymax = Q97.5), 
+              alpha = 0.2, fill = "blue") +
+  labs(title = "Bayesian Monod Curve Fit",
+       x = "Nutrient Concentration",
+       y = "Growth Rate",
+       subtitle = "Blue line = median prediction, shaded area = 95% credible interval") +
+  theme_classic()
+
+# Check model fit
+pp_check(Test_Model, ndraws = 100)
+
+# Compare prior vs posterior
+prior_summary(Test_Model)
+
+print(Test_Model)
+
+summary(Test_Model)
+
+mcmc_pairs(Test_Model, pars = c("b_mumax_Intercept", "b_K_Intercept", "sigma"), off_diag_args = list(size = 1.5))
+
+plot(Test_Model)
+
+Test_Model_Gamma_log<-brm(formula=monod_formula,
+                data = growth_data,
+                prior = priors,
+                family =Gamma(link="log"),
+                chains = 4,
+                iter = 4500,
+                warmup = 2000,
+                cores = 6,
+                control = list(adapt_delta = 0.95)
+)
+
+Test_Model_Gamma_identity<-brm(formula=monod_formula,
+                          data = growth_data,
+                          prior = priors,
+                          family =Gamma(link="identity"),
+                          chains = 4,
+                          iter = 4500,
+                          warmup = 2000,
+                          cores = 6,
+                          control = list(adapt_delta = 0.95)
+)
+
+
+LOO(Test_Model,Test_Model_Gamma_log,Test_Model_Gamma_identity)
+```
+
+## Code to run all simulation and fit
+
+Building in the different inoc and variances of the simulated data
+
+```{r}
+# Fitting Monod models across multiple inoculum x SD combinations
+library(brms)
+library(tidyverse)
+
+# Define parameter combinations
+inoculum_sizes <- c(0.005,0.01,0.02,0.025,0.05,0.1,0.15,0.25,0.5,1,5,10)  # 12 levels
+std_devs <- c(0,0.05,0.1,0.15,0.2,0.25,0.3)        # 7 levels
+
+# Create all combinations (5 x 5 = 25)
+param_grid <- expand.grid(
+  inoculum = inoculum_sizes,
+  sd = std_devs
+)
+
+# Define Monod formula (same for all fits)
+monod_formula <- bf(
+  growth_rate ~ mumax * nutrient / (K + nutrient),
+  mumax ~ 1,
+  K ~ 1,     
+  nl = TRUE    # non-linear model
+)
+
+# Set Priors
+priors <- c(
+  prior(normal(1,1), nlpar = "mumax", lb = 0),
+  prior(normal(0.0101, 3000), nlpar = "K", lb = 0)
+)
+
+# Initialize results storage
+results <- data.frame(
+  inoculum = numeric(),
+  sd = numeric(),
+  mumax_estimate =numeric(),
+  mumax_estimate_error = numeric(),
+  mumax_lower = numeric(),
+  mumax_upper = numeric(),
+  mumax_bulk_ess=numeric(),
+  mumax_tail_ess=numeric(),
+  mumax_rhat =numeric(),
+  K_estimate = numeric(),
+  K_estimate_error = numeric(),
+  K_lower =numeric(),
+  K_upper = numeric(),
+  K_bulk_ess=numeric(),
+  K_tail_ess=numeric(),
+  K_rhat =numeric(),
+  sigma=numeric()
+)
+```
+
+```{r}
+# Loop through all combinations
+set.seed(1969)
+nutrient_levels <- c(0.001,0.005,0.01,0.05,0.1,0.5,1,5)
+start_time_total<-Sys.time()
+for (i in 1:nrow(param_grid)) {
+  
+  cat("\n=== Fitting model", i, "of", nrow(param_grid), "===\n")
+  cat("Inoculum:", param_grid$inoculum[i], "| SD:", param_grid$sd[i], "\n")
+  start_time<-Sys.time()
+  
+  current_inoculum <- param_grid$inoculum[i]
+  current_sd <- param_grid$sd[i]
+  
+  mumax <- 1
+  Qmin <- 1
+  
+  growth_data <- data.frame()
+  for (nutrient in nutrient_levels) {
+    mean_growth <- mumax * nutrient / (current_inoculum*Qmin+ nutrient)
+    replicates <- rnorm(6, mean = mean_growth, sd = current_sd)
+    replicates <- pmax(replicates, 0.001)  # ensure positive
+    
+    growth_data <- rbind(growth_data, data.frame(
+      nutrient = nutrient,
+      growth_rate = replicates,
+      replicate = 1:6
+    ))
+  }
+  
+  # Fit the model
+  # Here tryCatch lets me run many models and if one fails it logs it and moves on instead of crashing the loop which is nice.
+  tryCatch({ 
+    fit <- brm(
+      formula = monod_formula,
+      data = growth_data,
+      prior = priors,
+      family = gaussian(),
+      chains = 4,
+      iter = 4000,
+      warmup = 2000,
+      cores = 6,
+      control = list(adapt_delta = 0.95),
+      refresh = 0,  # suppress iteration printing
+      silent = 2    # suppress most messages
+    )
+    
+    # Pull estimates and other values for analysis
+    mumax_est <- summary(fit)$fixed[1,1]
+    mumax_est_er<-summary(fit)$fixed[1,2]
+    mumax_ci_lo <-summary(fit)$fixed[1,3]
+    mumax_ci_up <-summary(fit)$fixed[1,4]
+    mumax_rhat <-summary(fit)$fixed[1,5]
+    mumax_bulk_ess<-summary(fit)$fixed[1,6]
+    mumax_tail_ess<-summary(fit)$fixed[1,7]
+    K_est <- summary(fit)$fixed[2,1]
+    K_est_er<-summary(fit)$fixed[2,2]
+    K_ci_lo <-summary(fit)$fixed[2,3]
+    K_ci_up <-summary(fit)$fixed[2,4]
+    K_rhat <-summary(fit)$fixed[2,5]
+    K_bulk_ess<-summary(fit)$fixed[2,6]
+    K_tail_ess<-summary(fit)$fixed[2,7]
+    sigma<-summary(fit)$spec_pars[1,1]
+    
+    # Store results
+    results <- rbind(results, data.frame(
+      inoculum = current_inoculum,
+      sd = current_sd,
+      mumax_estimate = mumax_est,
+      mumax_estimate_error = mumax_est_er,
+      mumax_lower = mumax_ci_lo,
+      mumax_upper = mumax_ci_up,
+      mumax_bulk_ess=mumax_bulk_ess,
+      mumax_tail_ess=mumax_tail_ess,
+      mumax_rhat =mumax_rhat,
+      K_estimate = K_est,
+      K_estimate_error = K_est_er,
+      K_lower =K_ci_lo,
+      K_upper = K_ci_up,
+      K_bulk_ess=K_bulk_ess,
+      K_tail_ess=K_tail_ess,
+      K_rhat =K_rhat,
+      sigma=sigma
+    ))
+    
+    cat("mumax est:", round(mumax_est, 3), 
+        "CI: [", round(mumax_ci_lo, 3), ",", round(mumax_ci_up, 3), "]\n")
+    cat("K est:", round(K_est, 3), 
+        "CI: [", round(K_ci_lo, 3), ",", round(K_ci_up, 3), "]\n")
+    end_time<-Sys.time()
+    cat("Model", i, "Runtime", end_time-start_time)
+    
+    
+  }, error = function(e) {
+    cat("Fit failed:", e$message, "\n")
+  })
+}
+
+
+end_time_total<-Sys.time()
+
+#Total model list runtime
+print(end_time_total-start_time_total)
+
+# View all results
+print(results)
+
+# Save results
+write.csv(results, "monod_fitting_results.csv", row.names = FALSE)
+
+# Plot mu_max estimates
+p1 <- ggplot(results, aes(x = factor(inoculum), y = mumax_estimate, color = factor(sd))) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = mumax_lower, ymax = mumax_upper), width = 0.2) +
+  labs(title = "mu_max Estimates Across Conditions",
+       x = "Inoculum Size", y = "mu_max", color = "Std Dev") +
+  theme_minimal()
+
+# Plot K_s estimates
+p2 <- ggplot(results, aes(x = factor(inoculum), y = K_estimate, color = factor(sd))) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = K_lower, ymax = K_upper), width = 0.2) +
+  labs(title = "K_s Estimates Across Conditions",
+       x = "Inoculum Size", y = "K_s", color = "Std Dev") +
+  geom_abline(intercept =0.0101,slope=0,aes(colour="red"))+
+  theme_minimal()
+
+print(p1)
+print(p2)
+```
+
+Quantify Bias
+
+```{r}
+results2<-mutate(results, K_bias = abs(results$K_estimate-0.0101))
+results2<-mutate(results2, mumax_bias = abs(results$mumax_estimate-1))
+```
+
+## Plot Bias Contour (first attempt)
+
+```{r}
+ggplot(results2,aes(x=log2(inoculum),y=sd,fill=log2(K_bias)))+
+  geom_tile()
+
+ggplot(results2,aes(x=log2(inoculum),y=sd,fill=mumax_bias))+
+  geom_tile()
+```
+
+```{r}
+ggplot(results2,aes(x=log2(inoculum),y=sd,z=mumax_bias))+
+  geom_contour_filled()
+
+ggplot(results2,aes(x=log2(inoculum),y=sd,z=log2(K_bias)))+
+  geom_contour_filled()
+
+results3<-results2
+```
+
+Plot initial contours
+
+```{r}
+ggplot(results3,aes(x=log2(inoculum),y=sd,z=log(mumax_bias)))+
+  geom_contour_filled(bins=10)+  
+  theme_classic()+
+  theme(legend.position = "right",
+        legend.key.size = unit(0.35, "cm"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size =9))
+
+
+ggplot(results3,aes(x=log2(inoculum),y=sd,z=log2(K_bias)))+
+  geom_contour_filled()+
+  theme_classic()
+```
+
+hmmm , these look bad, maybe there are ways to smooth them?
+
+## Plot Bias Contour (second attempt)
+
+Attempt to interpolate data to get smoother contour plots (not used in final analyses)
+
+```{r}
+library(akima)
+
+# Interpolate to create a finer grid
+interp_data <- interp(
+  x = log2(results3$inoculum),
+  y = results3$sd,
+  z = log2(results3$K_bias),
+  xo = seq(min(log2(results3$inoculum)), max(log2(results3$inoculum)), length = 200),
+  yo = seq(min(results3$sd), max(results3$sd), length = 200),
+  linear = F,  
+  extrap = T
+)
+
+interp_df <- expand.grid(x = interp_data$x, y = interp_data$y)
+interp_df$z <- as.vector(interp_data$z)
+interp_df <- na.omit(interp_df)
+```
+
+```{r}
+K_plot<-ggplot(interp_df, aes(x = x, y = y, z = z)) +
+  geom_contour_filled(bins = 9) +
+  labs(x = "Inoculum Size (log2)", 
+       y = "sd",
+       fill = "log2") +
+  ggtitle('K Bias')+
+  theme_classic()+
+  theme(legend.position = "right",
+        legend.key.size = unit(0.35, "cm"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size =9))
+```
+
+```{r}
+mumax_plot<-ggplot(results3,aes(x=log2(inoculum),y=sd,z=log2(mumax_bias)))+
+  geom_contour_filled(bins=8)+  
+  labs(x = "Inoculum Size (log2)", 
+       y = "sd",
+       fill = "log2") +
+  ggtitle('MuMax Bias')+
+  theme_classic()+
+  theme(legend.position = "right",
+        legend.key.size = unit(0.35, "cm"),
+        legend.text = element_text(size = 8),
+        legend.title = element_text(size =9))
+```
+
+```{r}
+K_plot
+mumax_plot
+```
+
+## Plot Bias Contour (third attempt) \[BEST\]
+
+Fit GAMs to the bias data instead! Much more statistically rigorous!
+
+```{r}
+gam_model_K <- gam(log2(K_bias) ~ s(log2(inoculum), sd, bs = "tp",k=20), 
+                   data = results3)
+summary(gam_model_K)
+gam_model_mumax <- gam(log2(mumax_bias) ~ s(log2(inoculum), sd, bs = "tp",k=20), 
+                       data = results3)
+summary(gam_model_mumax)
+
+# Create prediction grid
+pred_grid <- expand.grid(
+  inoculum = seq(min(results3$inoculum), max(results3$inoculum), length = 200),
+  sd = seq(min(results3$sd), max(results3$sd), length = 200)
+)
+
+pred_grid$predicted_K <- predict(gam_model_K, newdata = pred_grid)
+pred_grid$predicted_mumax <- predict(gam_model_mumax, newdata = pred_grid)
+
+# Plot the bias predicted values from GAMs
+ggplot(pred_grid, aes(x = log2(inoculum), y = sd, z = predicted_K)) +
+  geom_contour_filled(bins = 20) +
+  geom_point(data = results3, aes(x = log2(inoculum), y = sd,color=log2(K_bias)), 
+             inherit.aes = FALSE, size = 2) +
+  scale_color_viridis()+
+  ggtitle('K Bias')+
+  labs(x = "log2[inoculum size] (cells/ul)", y = "SD", fill = "log2(K_bias)") +
+  theme_classic()
+
+ggplot(pred_grid, aes(x = log2(inoculum), y = sd, z = predicted_mumax)) +
+  geom_contour_filled(bins = 20) +
+  geom_point(data = results3, aes(x = log2(inoculum), y = sd,color=log2(mumax_bias)), 
+             inherit.aes = FALSE, size = 2) + 
+  scale_color_viridis()+
+  ggtitle('mumax Bias')+
+  labs(x = "log2[inoculum size] (cells/ul)", y = "SD", fill = "mumax_bias") +
+  theme_classic()
+```
+
+```{r}
+gam.check(gam_model_K)
+gam.check(gam_model_K_nolog)
+
+summary(gam_model_K)
+```
+
+```{r}
+gam.check(gam_model_mumax)
+gam.check((gam_model_mumax_nolog))
+
+
+summary(gam_model_mumax)
+```
+
+```{r}
+gam_model_mumax_nolog <- gam(mumax_bias ~ s(log2(inoculum), sd, bs = "tp",k=20), 
+                             data = results3)
+
+gam.check(gam_model_mumax_nolog)
+summary(gam_model_mumax_nolog)
+```
+
+```{r}
+# Compare your K_bias vs mumax_bias models
+AIC(gam_model_mumax_nolog, gam_model_mumax)
+BIC(gam_model_mumax_nolog, gam_model_mumax)
+
+# Or create comparison table
+comparison <- data.frame(
+  response = c("mumax_nolog_bias", "mumax_bias"),
+  AIC = c(AIC(gam_model_mumax_nolog), AIC(gam_model_mumax)),
+  R_sq = c(summary(gam_model_mumax_nolog)$r.sq, summary(gam_model_mumax)$r.sq),
+  edf = c(sum(gam_model_mumax_nolog$edf), sum(gam_model_mumax$edf))
+)
+
+comparison
+```
+
+```{r}
+# Create prediction grid
+pred_grid <- expand.grid(
+  inoculum = seq(min(results3$inoculum), max(results3$inoculum), length = 200),
+  sd = seq(min(results3$sd), max(results3$sd), length = 200)
+)
+
+pred_grid$predicted_mumax <- predict(gam_model_mumax_nolog, newdata = pred_grid)
+
+# Plot the bias predicted values from GAMs
+
+
+ggplot(pred_grid, aes(x = log2(inoculum), y = sd, z = predicted_mumax)) +
+  geom_contour_filled(bins = 20) +
+  geom_point(data = results3, aes(x = log2(inoculum), y = sd,color=mumax_bias), 
+             inherit.aes = FALSE, size = 2) + 
+  scale_color_viridis()+
+  ggtitle('mumax Bias')+
+  labs(x = "log2[inoculum size] (cells/ul)", y = "SD", fill = "mumax_bias") +
+  theme_classic()
+```
+
+```{r}
+gam_model_K_nolog <- gam(K_bias ~ s(log2(inoculum), sd, bs = "tp",k=20), 
+                         data = results3)
+pred_grid <- expand.grid(
+  inoculum = seq(min(results3$inoculum), max(results3$inoculum), length = 200),
+  sd = seq(min(results3$sd), max(results3$sd), length = 200)
+)
+
+pred_grid$predicted_mumax <- predict(gam_model_K_nolog, newdata = pred_grid)
+
+# Plot the bias predicted values from GAMs
+
+
+ggplot(pred_grid, aes(x = log2(inoculum), y = sd, z = predicted_mumax)) +
+  geom_contour_filled(bins = 20) +
+  geom_point(data = results3, aes(x = log2(inoculum), y = sd,color=K_bias), 
+             inherit.aes = FALSE, size = 2) + 
+  scale_color_viridis()+
+  ggtitle('K Bias')+
+  labs(x = "log2[inoculum size] (cells/ul)", y = "SD", fill = "K_bias") +
+  theme_classic()
+```
+
+```{r}
+# Compare your K_bias vs mumax_bias models
+AIC(gam_model_K_nolog, gam_model_K)
+BIC(gam_model_K_nolog, gam_model_K)
+
+# Or create comparison table
+comparison <- data.frame(
+  response = c("K_nolog_bias", "K_bias"),
+  AIC = c(AIC(gam_model_K_nolog), AIC(gam_model_K)),
+  BIC = c(BIC(gam_model_K_nolog), BIC(gam_model_K)),
+  R_sq = c(summary(gam_model_K_nolog)$r.sq, summary(gam_model_K)$r.sq),
+  edf = c(sum(gam_model_K_nolog$edf), sum(gam_model_K$edf))
+)
+
+comparison
+```
